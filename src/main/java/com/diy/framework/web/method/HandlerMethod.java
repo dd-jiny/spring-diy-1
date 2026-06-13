@@ -4,6 +4,7 @@ import com.diy.framework.web.method.support.HandlerMethodArgumentResolverComposi
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 
@@ -33,7 +34,14 @@ public class HandlerMethod {
                 args[i] = argumentResolvers.resolveArgument(parameters[i], req, res);
             }
 
-            return method.invoke(bean, args);
+            try {
+                return method.invoke(bean, args);
+            } catch (InvocationTargetException e) {
+                final Throwable cause = e.getCause();
+                if (cause instanceof Exception) throw (Exception) cause;
+                if (cause instanceof Error) throw (Error) cause;
+                throw e;
+            }
         } finally {
             method.setAccessible(false);
         }

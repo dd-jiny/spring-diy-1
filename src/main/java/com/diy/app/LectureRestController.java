@@ -28,6 +28,12 @@ public class LectureRestController {
 
     @RequestMapping(value = "/api/lectures", methods = {RequestMethod.POST})
     public Lecture create(@RequestBody final Lecture lecture) {
+        if (lecture.getName() == null || lecture.getName().isBlank()) {
+            throw new IllegalArgumentException("name is required");
+        }
+        if (lecture.getPrice().compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("price must be non-negative");
+        }
         lecture.setId(100L);
         return lecture;
     }

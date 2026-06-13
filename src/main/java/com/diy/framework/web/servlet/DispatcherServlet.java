@@ -7,6 +7,8 @@ import com.diy.framework.core.Ordered;
 import com.diy.framework.web.mvc.view.ModelAndView;
 import com.diy.framework.web.mvc.view.View;
 import com.diy.framework.web.mvc.view.ViewResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -22,6 +24,7 @@ public class DispatcherServlet extends HttpServlet {
 
     private List<HandlerMapping> handlerMappings;
     private List<HandlerAdapter> handlerAdapters;
+    private List<HandlerExceptionResolver> handlerExceptionResolvers;
     private List<ViewResolver> viewResolvers;
 
     @Override
@@ -37,7 +40,18 @@ public class DispatcherServlet extends HttpServlet {
     private void initStrategies(final ApplicationContext context) {
         initHandlerMappings(context);
         initHandlerAdapters(context);
+        initHandlerExceptionResolvers(context);
         initViewResolvers(context);
+    }
+
+    private void initHandlerExceptionResolvers(final ApplicationContext context) {
+        try {
+            final Map<String, HandlerExceptionResolver> matchingBeans =
+                    BeanFactoryUtils.beansOfTypeIncludingAncestors(context, HandlerExceptionResolver.class);
+            this.handlerExceptionResolvers = new ArrayList<>(matchingBeans.values());
+        } catch (RuntimeException e) {
+            this.handlerExceptionResolvers = new ArrayList<>();
+        }
     }
 
     private void initHandlerMappings(final ApplicationContext context) {
@@ -68,25 +82,55 @@ public class DispatcherServlet extends HttpServlet {
     }
 
     private void doDispatch(final HttpServletRequest req, final HttpServletResponse resp) {
+        HandlerExecutionChain mappedHandler = null;
+        Exception dispatchException = null;
         try {
-            final Object handler = getHandler(req);
+            mappedHandler = getHandler(req);
+            if (mappedHandler == null) return;
 
-            final HandlerAdapter ha = getHandlerAdapter(handler);
+            if (!mappedHandler.applyPreHandle(req, resp)) return;
 
-            final ModelAndView mv = ha.handle(req, resp, handler);
+            final HandlerAdapter ha = getHandlerAdapter(mappedHandler.getHandler());
 
-            if (mv == null) return;
+            final ModelAndView mv = ha.handle(req, resp, mappedHandler.getHandler());
 
-            render(mv, req, resp);
+            mappedHandler.applyPostHandle(req, resp, mv);
+
+            if (mv != null && mv.getViewName() != null) render(mv, req, resp);
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            final Object handler = (mappedHandler != null) ? mappedHandler.getHandler() : null;
+            final ModelAndView resolved = processHandlerException(req, resp, handler, e);
+            if (resolved == null) {
+                dispatchException = e;
+                throw new RuntimeException(e);
+            }
+            try {
+                if (resolved.getViewName() != null) render(resolved, req, resp);
+            } catch (Exception renderEx) {
+                dispatchException = renderEx;
+                throw new RuntimeException(renderEx);
+            }
+        } finally {
+            if (mappedHandler != null) {
+                mappedHandler.triggerAfterCompletion(req, resp, dispatchException);
+            }
         }
     }
 
-    protected Object getHandler(final HttpServletRequest req) throws Exception {
+    private ModelAndView processHandlerException(final HttpServletRequest req, final HttpServletResponse resp, final Object handler, final Exception ex) {
+        if (this.handlerExceptionResolvers != null) {
+            for (final HandlerExceptionResolver resolver : this.handlerExceptionResolvers) {
+                final ModelAndView mv = resolver.resolveException(req, resp, handler, ex);
+                if (mv != null) return mv;
+            }
+        }
+        return null;
+    }
+
+    protected HandlerExecutionChain getHandler(final HttpServletRequest req) throws Exception {
         if (this.handlerMappings != null) {
             for (final HandlerMapping mapping : this.handlerMappings) {
-                final Object handler = mapping.getHandler(req);
+                final HandlerExecutionChain handler = mapping.getHandler(req);
                 if (handler != null) {
                     return handler;
                 }
@@ -108,22 +152,18 @@ public class DispatcherServlet extends HttpServlet {
                 "]: The DispatcherServlet configuration needs to include a HandlerAdapter that supports this handler");
     }
 
-    private void render(final ModelAndView mav, final HttpServletRequest req, final HttpServletResponse resp) throws Exception {
-        final String viewName = mav.getViewName();
+    private void render(final ModelAndView mv, final HttpServletRequest req, final HttpServletResponse resp) throws Exception {
+        final String viewName = mv.getViewName();
 
         final View view = resolveViewName(viewName);
 
-        if (view == null) {
-            throw new RuntimeException("View not found: " + viewName);
-        }
-
-        view.render(mav.getModel(), req, resp);
+        view.render(mv.getModel(), req, resp);
     }
 
     private View resolveViewName(final String viewName) {
         if (this.viewResolvers != null) {
-            for (final ViewResolver viewResolver : this.viewResolvers) {
-                final View view = viewResolver.resolveViewName(viewName);
+            for (ViewResolver viewResolver : this.viewResolvers) {
+                View view = viewResolver.resolveViewName(viewName);
                 if (view != null) {
                     return view;
                 }
@@ -132,4 +172,5 @@ public class DispatcherServlet extends HttpServlet {
 
         return null;
     }
+
 }
